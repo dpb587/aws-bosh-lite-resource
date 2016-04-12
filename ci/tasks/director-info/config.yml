@@ -1,0 +1,8 @@
+---
+platform: "linux"
+image: "docker:///dpb587/aws-bosh-lite-resource#develop"
+inputs:
+  - name: "repo"
+  - name: "bosh-lite"
+run:
+  path: "repo/ci/tasks/director-info/run.sh"

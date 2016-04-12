@@ -1,0 +1,112 @@
+#!/bin/sh -eu
+
+. $(dirname $0)/stack/common.sh
+
+cat > /tmp/stdin.bosh-lite
+
+deleting=$( jq -r '.params.delete // false' < /tmp/stdin.bosh-lite )
+
+if [[ "true" != "$deleting" ]] ; then
+  # we can avoid lookups if we're just deleting
+  version=$( jq -r '.version // "latest"' < /tmp/stdin.bosh-lite )
+
+  if [ "latest" == "${version:-latest}" ] ; then
+    REM 'resolving bosh-lite/latest'
+
+    BOX_URL=$(
+      curl -s https://atlas.hashicorp.com/api/v1/box/cloudfoundry/bosh-lite \
+        | jq -r '.current_version.providers[] | select(.name == "aws") | .download_url'
+    )
+
+    version=$( basename $( dirname $( dirname "$BOX_URL" ) ) )
+  else
+    BOX_URL="https://atlas.hashicorp.com/cloudfoundry/boxes/bosh-lite/versions/$version/providers/aws.box"
+  fi
+
+  REM "downloading bosh-lite/$version metadata"
+
+  curl -Ls "$BOX_URL" \
+    | tar -xzf- Vagrantfile
+
+  REM 'compiling params'
+
+  jq -c \
+    '{
+      "availability_zone": .source.availability_zone,
+      "instance_type": ( .source.instance_type // "c3.xlarge" ),
+      "key_name": ( .source.key_name // "default" ),
+      "subnet_id": .source.subnet_id,
+      "security_group_id": ( .source.security_group_id | split(",") ),
+      "private_ip": ( if "" != .source.private_ip then .source.private_ip else null end ),
+      }' \
+    < /tmp/stdin.bosh-lite \
+    > params.json
+
+  REM 'generating template'
+
+  cat Vagrantfile \
+    | grep aws.region_config \
+    | cut -d ' ' -f 2,4 \
+    | tr -d "\"," \
+    | jq -s -R \
+      --argfile params params.json \
+      -f /opt/resource/template.jq \
+      > /tmp/template.json
+fi
+
+jq -c \
+  '{
+    "source": (
+      {
+        "region": ( .source.availability_zone[:-1] )
+      }
+      + .source
+    ),
+    "params": (
+      {
+        "template": "/tmp/template.json"
+      }
+      + ({
+        "tags": ( .params.tags // null ),
+        "delete": ( .params.delete // null )
+      } | to_entries | map(select(.value)) | from_entries)
+    )
+  }' \
+  < /tmp/stdin.bosh-lite \
+  | /opt/resource/stack/out \
+  > /tmp/result
+
+if [[ "true" == "$deleting" ]] ; then
+  cat /tmp/result >&3
+  
+  exit
+fi
+
+REM 'looking for director'
+
+# director takes some time to start
+# lookup our ip and wait for it
+
+mkdir /tmp/in
+
+jq -c \
+  --argfile result /tmp/result \
+  '{ source } + $result' \
+  < /tmp/stdin.bosh-lite \
+  | /opt/resource/in /tmp/in \
+  > /dev/null
+
+target=$( cat /tmp/in/target )
+
+for seq in $( seq 0 60 ) ; do
+  REM 'checking director'
+
+  ! nc -w 10 -z $target 25555 || break
+
+  sleep 5
+done
+
+# ensure we exit on error
+nc -z $target 25555
+
+cat /tmp/result >&3

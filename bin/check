@@ -1,0 +1,14 @@
+#!/bin/sh
+
+cat \
+  | jq -c \
+    '{
+      "source": (
+        {
+          "region": ( .source.availability_zone[:-1] )
+        }
+        + .source
+      ),
+      "version": .version
+    }' \
+  | /opt/resource/stack/check

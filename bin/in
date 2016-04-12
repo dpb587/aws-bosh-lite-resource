@@ -1,0 +1,14 @@
+#!/bin/sh
+
+mkdir $1/stack
+
+cat \
+  | /opt/resource/stack/in $1/stack \
+  > /tmp/result
+
+jq -r \
+  '.BoshLitePrivateIp' \
+  < $1/stack/outputs.json \
+  > $1/target
+
+cat /tmp/result
